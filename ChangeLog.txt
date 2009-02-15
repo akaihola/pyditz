@@ -1,0 +1,13 @@
+Release 0.11 (in development)
+=============================
+
+* added issue assignment as a valid status change message
+
+* added reporting by day and week
+
+* code re-factoring
+
+
+Release 0.1 (imported into git 2008-12-13)
+==========================================
+

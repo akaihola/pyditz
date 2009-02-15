@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-VERSION = '0.1'
+VERSION = '0.11'
 
 __doc__ = """
 SYNOPSIS
@@ -15,8 +15,8 @@ DESCRIPTION
 
 EXAMPLES
 
-    $ pyditz.py -a 2008-07-01 ditz/issue-*.yaml
-    $ pyditz.py -b 2008-08-01 ditz 
+    $ pyditz.py -a 2008-07-01 .ditz/issue-*.yaml
+    $ pyditz.py -b 2008-08-01 .ditz
 
 AUTHOR
 
@@ -38,12 +38,43 @@ from os.path import join, isdir, isfile
 from optparse import OptionParser, TitledHelpFormatter, Option, OptionValueError
 from copy import copy
 from datetime import timedelta, datetime
+from collections import defaultdict
 import logging
 import yaml
+import re
 
 
-CLOSE_STATUS = 'closed issue with disposition '
-CHANGE_STATUS = 'changed status from '
+CLOSE_STATUS = re.compile(r'closed (?:issue )?with disposition (\w+)')
+CHANGE_STATUS = re.compile(r'changed status from (unstarted|in_progress|paused|closed) to (in_progress|paused)')
+ASSIGN_STATUS = re.compile('assigned to release ')
+
+class Matcher(object):
+    def __init__(self, data):
+        self.data = data
+    def match(self, pattern):
+        self.matchobj = pattern.match(self.data)
+        return self.matchobj
+    def group(self, index):
+        return self.matchobj.group(index)
+
+def format_h_m(delta):
+    """
+    Return a timedelta in a 1h20' style format.
+
+    Last changed: 2008-12-27 11:52+0200
+
+    >>> print format_h_m(timedelta(1, 154))
+    24h03'
+    >>> print format_h_m(timedelta(0, 3535))
+    59'
+    """
+    hours = 24 * delta.days + delta.seconds // 3600
+    minutes = round(delta.seconds % 3600 / 60.0)
+    if hours:
+        return "%dh%02d'" % (hours, minutes)
+    else:
+        return "%d'" % minutes
+
 def parse_status(status):
     """
     >>> parse_status('changed status from unstarted to in_progress')
@@ -54,16 +85,195 @@ def parse_status(status):
     ('paused', 'in_progress')
     >>> parse_status('closed issue with disposition fixed')
     (None, 'fixed')
+    >>> parse_status('assigned to release 0.1 from unassigned')
+    (None, None)
     """
-    if status.startswith(CLOSE_STATUS):
-        return None, status[len(CLOSE_STATUS):]
-    elif status.startswith(CHANGE_STATUS):
-        parts = status[len(CHANGE_STATUS):].split()
-        if parts[1] != 'to':
-            raise ValueError('Invalid status change message %r' % status)
-        return parts[0], parts[2]
+    status = Matcher(status)
+    if status.match(CLOSE_STATUS):
+        return None, status.group(1)
+    elif status.match(CHANGE_STATUS):
+        return status.group(1), status.group(2)
+    elif status.match(ASSIGN_STATUS):
+        return None, None
     else:
-        raise ValueError('Invalid status change message %r' % status)
+        raise ValueError('Invalid status change message %r' % status.data)
+
+class TimeDistribution(object):
+    """
+    Calculate distribution of time intervals into days and ISO weeks.
+
+    Class last changed: 2008-12-17 11:48+0200
+    """
+    def __init__(self, splithour=4):
+        self.splithour = splithour
+        self.days = defaultdict(timedelta)
+        self.weeks = defaultdict(timedelta)
+        self.total = timedelta()
+
+    def _add_to_day(self, day, duration):
+        """
+        >>> from datetime import date
+        >>> t = TimeDistribution()
+        >>> t._add_to_day(date(2008, 12, 17), timedelta(0, 7200))
+        >>> t.total
+        datetime.timedelta(0, 7200)
+        >>> dict(t.weeks)
+        {(2008, 51): datetime.timedelta(0, 7200)}
+        >>> dict(t.days)
+        {datetime.date(2008, 12, 17): datetime.timedelta(0, 7200)}
+        """
+        self.days[day] += duration
+        self.weeks[day.isocalendar()[:2]] += duration
+        self.total += duration
+
+    def add(self, dtstart, dtend):
+        """
+        >>> t = TimeDistribution(splithour=4)
+        >>> t.add(datetime(2008, 11, 15, 13, 45),  # 13:45-15:15
+        ...       datetime(2008, 11, 15, 15, 15))
+        >>> t.add(datetime(2008, 12, 15, 3, 45),   # Mon 3:45 - next Tue 5:15
+        ...       datetime(2008, 12, 23, 5, 15))
+        >>> from pprint import pprint
+        >>> pprint(dict(t.days))
+        {datetime.date(2008, 11, 15): datetime.timedelta(0, 5400),
+         datetime.date(2008, 12, 14): datetime.timedelta(0, 900),
+         datetime.date(2008, 12, 15): datetime.timedelta(1),
+         datetime.date(2008, 12, 16): datetime.timedelta(1),
+         datetime.date(2008, 12, 17): datetime.timedelta(1),
+         datetime.date(2008, 12, 18): datetime.timedelta(1),
+         datetime.date(2008, 12, 19): datetime.timedelta(1),
+         datetime.date(2008, 12, 20): datetime.timedelta(1),
+         datetime.date(2008, 12, 21): datetime.timedelta(1),
+         datetime.date(2008, 12, 22): datetime.timedelta(1),
+         datetime.date(2008, 12, 23): datetime.timedelta(0, 18900)}
+        >>> pprint(dict(t.weeks))
+        {(2008, 46): datetime.timedelta(0, 5400),
+         (2008, 50): datetime.timedelta(0, 900),
+         (2008, 51): datetime.timedelta(7),
+         (2008, 52): datetime.timedelta(1, 18900)}
+        >>> t.total
+        datetime.timedelta(8, 25200)
+        """
+        dstart = (dtstart-timedelta(0, self.splithour*3600)).date()
+        dend = (dtend-timedelta(0, self.splithour*3600)).date()
+        dstart00h = datetime(*dstart.timetuple()[:3])
+        dateline = dstart00h + timedelta(1, self.splithour*3600)
+        if dtend > dateline:
+            self._add_to_day(dstart, dateline - dtstart)
+            for d in range(1, (dend - dstart).days):
+                self._add_to_day(dstart + timedelta(d), timedelta(1))
+            self._add_to_day(dend, dtend - datetime(*dend.timetuple()[:3]))
+        else:
+            self._add_to_day(dstart, dtend - dtstart)
+
+    def _str_weeks(self):
+        """
+        >>> t = TimeDistribution()
+        >>> t._str_weeks()
+        ''
+        >>> t.weeks[2008, 51] = timedelta(2, 189)
+        >>> t._str_weeks()
+        "2008-51/48h03'"
+        """
+        return ' '.join('%04d-%02d/%s' % (key[0], key[1],
+                                          format_h_m(self.weeks[key]))
+                        for key in sorted(self.weeks.keys()))
+
+    def _str_days(self):
+        """
+        >>> from datetime import date
+        >>> t = TimeDistribution()
+        >>> t._str_days()
+        ''
+        >>> t.days[date(2008, 12, 13)] = timedelta(0, 189)
+        >>> t._str_days()
+        "2008-12-13/3'"
+        """
+        return ' '.join(
+            '%04d-%02d-%02d/%s' % (key.year, key.month, key.day,
+                                   format_h_m(self.days[key]))
+            for key in sorted(self.days.keys()))
+
+    def __add__(self, other):
+        """
+        >>> t = TimeDistribution(splithour=4)
+        >>> t.add(datetime(2008, 11, 15, 13, 45),  # 13:45-15:15
+        ...       datetime(2008, 11, 15, 15, 15))
+        >>> from pprint import pprint
+        >>> pprint((t.total, dict(t.weeks), dict(t.days)))
+        (datetime.timedelta(0, 5400),
+         {(2008, 46): datetime.timedelta(0, 5400)},
+         {datetime.date(2008, 11, 15): datetime.timedelta(0, 5400)})
+        """
+        result = self.__class__()
+        for attname in 'days', 'weeks':
+            mydict = getattr(self, attname)
+            otherdict = getattr(other, attname)
+            mykeys = set(mydict.keys())
+            otherkeys = set(otherdict.keys())
+            for key in mykeys.union(otherkeys):
+                getattr(result, attname)[key] += mydict[key] + otherdict[key]
+        result.total = self.total + other.total
+        return result
+
+    def __nonzero__(self):
+        """
+        >>> bool(TimeDistribution(splithour=4))
+        False
+        >>> t = TimeDistribution(splithour=4)
+        >>> t.total = timedelta(0, 60)
+        >>> bool(t)
+        True
+        """
+        return self.total > timedelta()
+
+    def __repr__(self):
+        """
+        >>> from datetime import date
+        >>> t = TimeDistribution(splithour=4)
+        >>> t.weeks[2008, 46] = timedelta(0, 5400)
+        >>> t.days[date(2008, 11, 15)] = timedelta(0, 5400)
+        >>> t.total = timedelta(0, 5400)
+        >>> t
+        <TimeDistribution 1h30' 2008-46/1h30' 2008-11-15/1h30'>
+        """
+        return '<TimeDistribution %s %s %s>' % (
+            format_h_m(self.total), self._str_weeks(), self._str_days())
+
+    def report_txt(self):
+        r"""
+        >>> t = TimeDistribution()
+        >>> t.add(datetime(2008, 12, 29, 1),
+        ...       datetime(2009,  1,  5, 5))
+        >>> print '\n'.join(t.report_txt())
+        2008 52   3h00' 2008-12-28   3h00'
+        2009 01 168h00' 2008-12-29  24h00'
+                        2008-12-30  24h00'
+                        2008-12-31  24h00'
+                        2009-01-01  24h00'
+                        2009-01-02  24h00'
+                        2009-01-03  24h00'
+                        2009-01-04  24h00'
+             02   5h00' 2009-01-05   5h00'
+        total   176h00'
+        """
+        last_year = last_week = None
+        for day in sorted(self.days.keys()):
+            year, week = day.isocalendar()[:2]
+            print_year = '    '
+            print_week = (2+1+7)*' '
+            if year != last_year:
+                print_year = '%04d' % year
+                last_year = year
+                last_week = None
+            if week != last_week:
+                print_week = '%02d %7s' % (week,
+                                           format_h_m(self.weeks[year, week]))
+                last_week = week
+            yield '%s %s %04d-%02d-%02d %7s' % (
+                print_year, print_week, day.year, day.month, day.day,
+                format_h_m(self.days[day]))
+        yield 'total %9s' % format_h_m(self.total)
 
 class Issue(yaml.YAMLObject):
     """
@@ -99,13 +309,13 @@ class Issue(yaml.YAMLObject):
         ... '''))
 
         >>> i.total_time()
-        datetime.timedelta(0, 10816, 39282)
+        <TimeDistribution 3h00' 2008-25/1h00' 2008-41/2h00' 2008-06-16/1h00' 2008-10-06/2h00'>
 
         >>> from datetime import datetime
         >>> i.total_time(earliest=datetime(2008,9,1))
-        datetime.timedelta(0, 7208, 19641)
+        <TimeDistribution 2h00' 2008-41/2h00' 2008-10-06/2h00'>
         >>> i.total_time(latest=datetime(2008,9,1))
-        datetime.timedelta(0, 3608, 19641)
+        <TimeDistribution 1h00' 2008-25/1h00' 2008-06-16/1h00'>
         """
 
         def filtered(timestamp):
@@ -117,7 +327,7 @@ class Issue(yaml.YAMLObject):
                 return True
             return False
 
-        cum_time = timedelta()
+        cum_time = TimeDistribution()
         dtstart = None
         for timestamp, _person, status, _comment in self.log_events:
             if status in ('created', 'commented'):
@@ -128,9 +338,9 @@ class Issue(yaml.YAMLObject):
                     dtstart = timestamp
             elif status_to in ('paused', 'fixed'):
                 if dtstart is not None:
-                    cum_time += timestamp - dtstart
+                    cum_time.add(dtstart, timestamp)
                     dtstart = None
-            else:
+            elif status_to is not None:
                 raise ValueError('Unknown status %r' % status_to)
         return cum_time
 
@@ -176,16 +386,16 @@ def report_progress_times(filepaths, options):
     in filepaths), calculate total time spent in progress and report totals for
     issues separately with a grand total at the end.
     """
-    cum_time = timedelta()
+    cum_time = TimeDistribution()
     for filehandle in iterate_files(filepaths):
         issue = yaml.load(filehandle)
         filehandle.close()
-        total_time = issue.total_time(earliest=options.after,
+        issue_time = issue.total_time(earliest=options.after,
                                       latest=options.before)
-        if total_time:
-            print format_timedelta(total_time), issue.id[:5], issue.title
-        cum_time += total_time
-    print cum_time
+        if issue_time:
+            print format_timedelta(issue_time.total), issue.id[:5], issue.title
+        cum_time += issue_time
+    print '\n'.join(cum_time.report_txt())
 
 
 ########################################################################
