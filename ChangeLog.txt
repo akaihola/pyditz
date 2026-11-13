@@ -1,6 +1,10 @@
 Release 0.11 (in development)
 =============================
 
+* log messages which don't change the status (edits, references,
+  release and component changes) no longer stop the report, and
+  closing an issue with any disposition ends the work on it
+
 * added issue assignment as a valid status change message
 
 * added reporting by day and week

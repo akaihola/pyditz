@@ -45,8 +45,7 @@ import re
 
 
 CLOSE_STATUS = re.compile(r'closed (?:issue )?with disposition (\w+)')
-CHANGE_STATUS = re.compile(r'changed status from (unstarted|in_progress|paused|closed) to (in_progress|paused)')
-ASSIGN_STATUS = re.compile('assigned to release ')
+CHANGE_STATUS = re.compile(r'changed status from (\w+) to (\w+)')
 
 class Matcher(object):
     def __init__(self, data):
@@ -87,16 +86,27 @@ def parse_status(status):
     (None, 'fixed')
     >>> parse_status('assigned to release 0.1 from unassigned')
     (None, None)
+
+    Older Ditz versions closed issues with a status change, and other log
+    messages (edits, references, comments, assignments) don't change the
+    status:
+
+    >>> parse_status('changed status from unstarted to fixed')
+    ('unstarted', 'fixed')
+    >>> parse_status('closed with disposition wontfix')
+    (None, 'wontfix')
+    >>> parse_status('edited title, description')
+    (None, None)
+    >>> parse_status('added reference 1')
+    (None, None)
     """
     status = Matcher(status)
     if status.match(CLOSE_STATUS):
         return None, status.group(1)
     elif status.match(CHANGE_STATUS):
         return status.group(1), status.group(2)
-    elif status.match(ASSIGN_STATUS):
-        return None, None
     else:
-        raise ValueError('Invalid status change message %r' % status.data)
+        return None, None
 
 class TimeDistribution(object):
     """
@@ -316,6 +326,27 @@ class Issue(yaml.YAMLObject):
         <TimeDistribution 2h00' 2008-41/2h00' 2008-10-06/2h00'>
         >>> i.total_time(latest=datetime(2008,9,1))
         <TimeDistribution 1h00' 2008-25/1h00' 2008-06-16/1h00'>
+
+        Edits don't interrupt work, and closing an issue with any
+        disposition ends it:
+
+        >>> i = yaml.load(StringIO('''--- !ditz.rubyforge.org,2008-03-06/issue
+        ... log_events:
+        ... - - 2008-06-16 10:00:00.000000 Z
+        ...   - Antti Kaihola <akaihol+ditz@ambitone.com>
+        ...   - changed status from unstarted to in_progress
+        ...   - ""
+        ... - - 2008-06-16 10:30:00.000000 Z
+        ...   - Antti Kaihola <akaihol+ditz@ambitone.com>
+        ...   - edited title, description
+        ...   - ""
+        ... - - 2008-06-16 11:00:00.000000 Z
+        ...   - Antti Kaihola <akaihol+ditz@ambitone.com>
+        ...   - closed with disposition wontfix
+        ...   - ""
+        ... '''))
+        >>> i.total_time()
+        <TimeDistribution 1h00' 2008-25/1h00' 2008-06-16/1h00'>
         """
 
         def filtered(timestamp):
@@ -330,18 +361,15 @@ class Issue(yaml.YAMLObject):
         cum_time = TimeDistribution()
         dtstart = None
         for timestamp, _person, status, _comment in self.log_events:
-            if status in ('created', 'commented'):
-                continue
             _status_from, status_to = parse_status(status)
             if status_to == 'in_progress':
                 if not filtered(timestamp):
                     dtstart = timestamp
-            elif status_to in ('paused', 'fixed'):
+            elif status_to is not None:
+                # paused, or closed with any disposition
                 if dtstart is not None:
                     cum_time.add(dtstart, timestamp)
                     dtstart = None
-            elif status_to is not None:
-                raise ValueError('Unknown status %r' % status_to)
         return cum_time
 
     def __repr__(self):
