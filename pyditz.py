@@ -66,9 +66,11 @@ def format_h_m(delta):
     24h03'
     >>> print format_h_m(timedelta(0, 3535))
     59'
+    >>> print format_h_m(timedelta(0, 7190))
+    2h00'
     """
-    hours = 24 * delta.days + delta.seconds // 3600
-    minutes = round(delta.seconds % 3600 / 60.0)
+    minutes = int(round(24 * 60 * delta.days + delta.seconds / 60.0))
+    hours, minutes = divmod(minutes, 60)
     if hours:
         return "%dh%02d'" % (hours, minutes)
     else:

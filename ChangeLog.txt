@@ -1,6 +1,8 @@
 Release 0.11 (in development)
 =============================
 
+* fixed rounding of hours and minutes: 1h59'50" was shown as 1h60'
+
 * fixed the split into days and weeks: the last day of a work
   session crossing the 4am day boundary got four hours too much
 
