@@ -155,14 +155,25 @@ class TimeDistribution(object):
          datetime.date(2008, 12, 20): datetime.timedelta(1),
          datetime.date(2008, 12, 21): datetime.timedelta(1),
          datetime.date(2008, 12, 22): datetime.timedelta(1),
-         datetime.date(2008, 12, 23): datetime.timedelta(0, 18900)}
+         datetime.date(2008, 12, 23): datetime.timedelta(0, 4500)}
         >>> pprint(dict(t.weeks))
         {(2008, 46): datetime.timedelta(0, 5400),
          (2008, 50): datetime.timedelta(0, 900),
          (2008, 51): datetime.timedelta(7),
-         (2008, 52): datetime.timedelta(1, 18900)}
+         (2008, 52): datetime.timedelta(1, 4500)}
         >>> t.total
-        datetime.timedelta(8, 25200)
+        datetime.timedelta(8, 10800)
+
+        An overnight session is split at 4am:
+
+        >>> t = TimeDistribution(splithour=4)
+        >>> t.add(datetime(2008, 12, 17, 22),    # Wed 22:00 - Thu 5:00
+        ...       datetime(2008, 12, 18, 5))
+        >>> pprint(dict(t.days))
+        {datetime.date(2008, 12, 17): datetime.timedelta(0, 21600),
+         datetime.date(2008, 12, 18): datetime.timedelta(0, 3600)}
+        >>> t.total
+        datetime.timedelta(0, 25200)
         """
         dstart = (dtstart-timedelta(0, self.splithour*3600)).date()
         dend = (dtend-timedelta(0, self.splithour*3600)).date()
@@ -172,7 +183,9 @@ class TimeDistribution(object):
             self._add_to_day(dstart, dateline - dtstart)
             for d in range(1, (dend - dstart).days):
                 self._add_to_day(dstart + timedelta(d), timedelta(1))
-            self._add_to_day(dend, dtend - datetime(*dend.timetuple()[:3]))
+            dend_start = (datetime(*dend.timetuple()[:3])
+                          + timedelta(0, self.splithour*3600))
+            self._add_to_day(dend, dtend - dend_start)
         else:
             self._add_to_day(dstart, dtend - dtstart)
 
@@ -264,8 +277,8 @@ class TimeDistribution(object):
                         2009-01-02  24h00'
                         2009-01-03  24h00'
                         2009-01-04  24h00'
-             02   5h00' 2009-01-05   5h00'
-        total   176h00'
+             02   1h00' 2009-01-05   1h00'
+        total   172h00'
         """
         last_year = last_week = None
         for day in sorted(self.days.keys()):

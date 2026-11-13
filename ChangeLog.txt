@@ -1,6 +1,9 @@
 Release 0.11 (in development)
 =============================
 
+* fixed the split into days and weeks: the last day of a work
+  session crossing the 4am day boundary got four hours too much
+
 * log messages which don't change the status (edits, references,
   release and component changes) no longer stop the report, and
   closing an issue with any disposition ends the work on it
